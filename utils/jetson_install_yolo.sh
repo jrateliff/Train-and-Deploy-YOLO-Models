@@ -3,7 +3,7 @@
 # Get sudo permission
 sudo -v
 
-# Confirm user is running Jetpack 6.1 (L4T 36.4)
+# Confirm user is running Jetpack 6.2.2 (L4T 36.5)
 if [ -f /etc/nv_tegra_release ]; then
     L4T_RELEASE=$(sed -n 's/.*R\([0-9]*\) (release).*/\1/p' /etc/nv_tegra_release)
     L4T_REVISION=$(sed -n 's/.*REVISION: \([0-9.]*\).*/\1/p' /etc/nv_tegra_release)
@@ -12,12 +12,12 @@ else
     exit 1
 fi
 
-if [[ "$L4T_RELEASE" == "36" && "$L4T_REVISION" == "4"* ]]; then
-    echo "JetPack version is correct (6.1 / L4T $L4T_RELEASE.$L4T_REVISION)"
+if [[ "$L4T_RELEASE" == "36" && "$L4T_REVISION" == "5"* ]]; then
+    echo "JetPack version is correct (6.2 / L4T $L4T_RELEASE.$L4T_REVISION)"
 else
     echo "Wrong version of NVIDIA JetPack is installed."
     echo "Detected L4T: R$L4T_RELEASE Revision $L4T_REVISION"
-    echo "Please install JetPack 6.1 from the SD Card Image downloadable at: https://developer.nvidia.com/embedded/jetpack-sdk-61"
+    echo "Please install JetPack 6.2.2 from the SD Card Image downloadable at: https://developer.nvidia.com/embedded/jetpack-sdk-61"
     echo "Exiting Ultralytics installation script due to unsupported JetPack version."
     exit 1
 fi
