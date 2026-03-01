@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import os
 import sys
 import argparse
@@ -10,23 +11,34 @@ import numpy as np
 from ultralytics import YOLO
 
 # Define and parse user input arguments
-
 parser = argparse.ArgumentParser()
 parser.add_argument('--model', help='Path to YOLO model file (example: "runs/detect/train/weights/best.pt")',
                     required=True)
-parser.add_argument('--source', help='Image source, can be image file ("test.jpg"), \
-                    image folder ("test_dir"), video file ("testvid.mp4"), index of USB camera ("usb0"), or index of Picamera ("picamera0")', 
+parser.add_argument('--source', help='Image source, can be image file ("test.jpg"),                     image folder ("test_dir"), video file ("testvid.mp4"), index of USB camera ("usb0"), or index of Picamera ("picamera0")',
                     required=True)
 parser.add_argument('--thresh', help='Minimum confidence threshold for displaying detected objects (example: "0.4")',
                     default=0.5)
-parser.add_argument('--resolution', help='Resolution in WxH to display inference results at (example: "640x480"), \
-                    otherwise, match source resolution',
+parser.add_argument('--resolution', help='Resolution in WxH to display inference results at (example: "640x480"),                     otherwise, match source resolution',
                     default=None)
 parser.add_argument('--record', help='Record results from video or webcam and save it as "demo1.avi". Must specify --resolution argument to record.',
                     action='store_true')
 
+# New additions: MQTT presence publishing (uses mosquitto_pub you already have working)
+parser.add_argument('--ha-ip', default='192.168.1.52', help='MQTT broker IP (Home Assistant)')
+parser.add_argument('--mqtt-user', default='jtrdev', help='MQTT username')
+parser.add_argument('--mqtt-pass', default='1010Maxisthebest9911#', help='MQTT password')
+parser.add_argument('--presence-topic', default='home/orin/yolo/person_present', help='Topic to publish ON/OFF')
+parser.add_argument('--presence-class', default='person', help='Class name for presence (default person)')
+parser.add_argument('--presence-off-timeout', type=float, default=10.0, help='Seconds with no person before OFF')
+
 args = parser.parse_args()
 
+def mqtt_pub(host, user, pw, topic, msg):
+    cmd = ["mosquitto_pub", "-h", host, "-p", "1883", "-u", user, "-P", pw, "-t", topic, "-m", msg, "-V", "5"]
+    r = subprocess.run(cmd, text=True, capture_output=True)
+    print(f"[MQTT] publish {msg} rc={r.returncode}")
+    if r.returncode != 0:
+        print("[MQTT] stderr:", r.stderr.strip())
 
 # Parse user inputs
 model_path = args.model
@@ -40,7 +52,7 @@ if (not os.path.exists(model_path)):
     print('ERROR: Model path is invalid or model was not found. Make sure the model filename was entered correctly.')
     sys.exit(0)
 
-# Load the model into memory and get labemap
+# Load the model into memory and get label map
 model = YOLO(model_path, task='detect')
 labels = model.names
 
@@ -71,11 +83,14 @@ else:
 
 # Parse user-specified display resolution
 resize = False
+resW = None
+resH = None
 if user_res:
     resize = True
     resW, resH = int(user_res.split('x')[0]), int(user_res.split('x')[1])
 
 # Check if recording is valid and set up recording
+recorder = None
 if record:
     if source_type not in ['video','usb']:
         print('Recording only works for video and camera sources. Please try again.')
@@ -83,7 +98,7 @@ if record:
     if not user_res:
         print('Please specify resolution to record video at.')
         sys.exit(0)
-    
+
     # Set up recording
     record_name = 'demo1.avi'
     record_fps = 30
@@ -111,13 +126,19 @@ elif source_type == 'video' or source_type == 'usb':
         ret = cap.set(4, resH)
 
 elif source_type == 'picamera':
+    # Original behavior required resW/resH; if not provided, this will crash.
+    # Minimal guard so it still "works" instead of exploding.
+    if not user_res:
+        print('Please specify --resolution WxH when using picamera0.')
+        sys.exit(0)
+
     from picamera2 import Picamera2
     cap = Picamera2()
     cap.configure(cap.create_video_configuration(main={"format": 'RGB888', "size": (resW, resH)}))
     cap.start()
 
 # Set bounding box colors (using the Tableu 10 color scheme)
-bbox_colors = [(164,120,87), (68,148,228), (93,97,209), (178,182,133), (88,159,106), 
+bbox_colors = [(164,120,87), (68,148,228), (93,97,209), (178,182,133), (88,159,106),
               (96,202,231), (159,124,168), (169,162,241), (98,118,150), (172,176,184)]
 
 # Initialize control and status variables
@@ -126,33 +147,39 @@ frame_rate_buffer = []
 fps_avg_len = 200
 img_count = 0
 
+# New additions: presence state tracking
+presence_on = False
+last_present_time = 0.0
+presence_class = args.presence_class
+presence_topic = args.presence_topic
+
 # Begin inference loop
 while True:
 
     t_start = time.perf_counter()
 
     # Load frame from image source
-    if source_type == 'image' or source_type == 'folder': # If source is image or image folder, load the image using its filename
+    if source_type == 'image' or source_type == 'folder':
         if img_count >= len(imgs_list):
             print('All images have been processed. Exiting program.')
             sys.exit(0)
         img_filename = imgs_list[img_count]
         frame = cv2.imread(img_filename)
         img_count = img_count + 1
-    
-    elif source_type == 'video': # If source is a video, load next frame from video file
+
+    elif source_type == 'video':
         ret, frame = cap.read()
         if not ret:
             print('Reached end of the video file. Exiting program.')
             break
-    
-    elif source_type == 'usb': # If source is a USB camera, grab frame from camera
+
+    elif source_type == 'usb':
         ret, frame = cap.read()
         if (frame is None) or (not ret):
             print('Unable to read frames from the camera. This indicates the camera is disconnected or not working. Exiting program.')
             break
 
-    elif source_type == 'picamera': # If source is a Picamera, grab frames using picamera interface
+    elif source_type == 'picamera':
         frame = cap.capture_array()
         if (frame is None):
             print('Unable to read frames from the Picamera. This indicates the camera is disconnected or not working. Exiting program.')
@@ -171,14 +198,17 @@ while True:
     # Initialize variable for basic object counting example
     object_count = 0
 
+    # New additions: detect "presence" while we loop detections
+    now = time.time()
+    present_detected_this_frame = False
+
     # Go through each detection and get bbox coords, confidence, and class
     for i in range(len(detections)):
 
         # Get bounding box coordinates
-        # Ultralytics returns results in Tensor format, which have to be converted to a regular Python array
-        xyxy_tensor = detections[i].xyxy.cpu() # Detections in Tensor format in CPU memory
-        xyxy = xyxy_tensor.numpy().squeeze() # Convert tensors to Numpy array
-        xmin, ymin, xmax, ymax = xyxy.astype(int) # Extract individual coordinates and convert to int
+        xyxy_tensor = detections[i].xyxy.cpu()
+        xyxy = xyxy_tensor.numpy().squeeze()
+        xmin, ymin, xmax, ymax = xyxy.astype(int)
 
         # Get bounding box class ID and name
         classidx = int(detections[i].cls.item())
@@ -190,40 +220,56 @@ while True:
         # Draw box if confidence threshold is high enough
         if conf > min_thresh:
 
+            # Presence test (only when the detection itself meets your min_thresh)
+            if classname == presence_class:
+                present_detected_this_frame = True
+                last_present_time = now
+                print(f"[PRESENCE] detected {classname} conf={conf:.2f}")
+                
             color = bbox_colors[classidx % 10]
             cv2.rectangle(frame, (xmin,ymin), (xmax,ymax), color, 2)
 
             label = f'{classname}: {int(conf*100)}%'
-            labelSize, baseLine = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1) # Get font size
-            label_ymin = max(ymin, labelSize[1] + 10) # Make sure not to draw label too close to top of window
-            cv2.rectangle(frame, (xmin, label_ymin-labelSize[1]-10), (xmin+labelSize[0], label_ymin+baseLine-10), color, cv2.FILLED) # Draw white box to put label text in
-            cv2.putText(frame, label, (xmin, label_ymin-7), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1) # Draw label text
+            labelSize, baseLine = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+            label_ymin = max(ymin, labelSize[1] + 10)
+            cv2.rectangle(frame, (xmin, label_ymin-labelSize[1]-10), (xmin+labelSize[0], label_ymin+baseLine-10), color, cv2.FILLED)
+            cv2.putText(frame, label, (xmin, label_ymin-7), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
 
             # Basic example: count the number of objects in the image
             object_count = object_count + 1
 
+    # New additions: publish transitions only (no spamming)
+    if present_detected_this_frame and (not presence_on):
+        mqtt_pub(args.ha_ip, args.mqtt_user, args.mqtt_pass, presence_topic, "ON")
+        presence_on = True
+
+    if presence_on and (now - last_present_time) > args.presence_off_timeout:
+        mqtt_pub(args.ha_ip, args.mqtt_user, args.mqtt_pass, presence_topic, "OFF")
+        presence_on = False
+
     # Calculate and draw framerate (if using video, USB, or Picamera source)
     if source_type == 'video' or source_type == 'usb' or source_type == 'picamera':
-        cv2.putText(frame, f'FPS: {avg_frame_rate:0.2f}', (10,20), cv2.FONT_HERSHEY_SIMPLEX, .7, (0,255,255), 2) # Draw framerate
-    
+        cv2.putText(frame, f'FPS: {avg_frame_rate:0.2f}', (10,20), cv2.FONT_HERSHEY_SIMPLEX, .7, (0,255,255), 2)
+
     # Display detection results
-    cv2.putText(frame, f'Number of objects: {object_count}', (10,40), cv2.FONT_HERSHEY_SIMPLEX, .7, (0,255,255), 2) # Draw total number of detected objects
-    cv2.imshow('YOLO detection results',frame) # Display image
-    if record: recorder.write(frame)
+    cv2.putText(frame, f'Number of objects: {object_count}', (10,40), cv2.FONT_HERSHEY_SIMPLEX, .7, (0,255,255), 2)
+    cv2.imshow('YOLO detection results',frame)
+    if record and recorder is not None:
+        recorder.write(frame)
 
     # If inferencing on individual images, wait for user keypress before moving to next image. Otherwise, wait 5ms before moving to next frame.
     if source_type == 'image' or source_type == 'folder':
         key = cv2.waitKey()
     elif source_type == 'video' or source_type == 'usb' or source_type == 'picamera':
         key = cv2.waitKey(5)
-    
-    if key == ord('q') or key == ord('Q'): # Press 'q' to quit
+
+    if key == ord('q') or key == ord('Q'):
         break
-    elif key == ord('s') or key == ord('S'): # Press 's' to pause inference
+    elif key == ord('s') or key == ord('S'):
         cv2.waitKey()
-    elif key == ord('p') or key == ord('P'): # Press 'p' to save a picture of results on this frame
+    elif key == ord('p') or key == ord('P'):
         cv2.imwrite('capture.png',frame)
-    
+
     # Calculate FPS for this frame
     t_stop = time.perf_counter()
     frame_rate_calc = float(1/(t_stop - t_start))
@@ -238,12 +284,12 @@ while True:
     # Calculate average FPS for past frames
     avg_frame_rate = np.mean(frame_rate_buffer)
 
-
 # Clean up
 print(f'Average pipeline FPS: {avg_frame_rate:.2f}')
 if source_type == 'video' or source_type == 'usb':
     cap.release()
 elif source_type == 'picamera':
     cap.stop()
-if record: recorder.release()
+if record and recorder is not None:
+    recorder.release()
 cv2.destroyAllWindows()
