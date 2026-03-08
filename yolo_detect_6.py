@@ -11,7 +11,41 @@ import numpy as np
 from ultralytics import YOLO
 
 
-def prompt_text(label, default=None, allow_empty=False):
+def menu_select(title, options, default_index=0, allow_custom=False, custom_label="Enter custom value"):
+    while True:
+        print("")
+        print(title)
+        for i, opt in enumerate(options, start=1):
+            marker = " (default)" if (i - 1) == default_index else ""
+            print(f"  {i}. {opt}{marker}")
+
+        if allow_custom:
+            custom_num = len(options) + 1
+            print(f"  {custom_num}. {custom_label}")
+
+        raw = input("Select option number: ").strip()
+
+        if raw == "":
+            return options[default_index]
+
+        if raw.isdigit():
+            idx = int(raw)
+            if 1 <= idx <= len(options):
+                return options[idx - 1]
+            if allow_custom and idx == len(options) + 1:
+                return None
+
+        print("Invalid selection. Type a valid option number.")
+
+
+def menu_yes_no(title, default=True):
+    options = ["Yes", "No"]
+    default_index = 0 if default else 1
+    result = menu_select(title, options, default_index=default_index, allow_custom=False)
+    return result == "Yes"
+
+
+def prompt_text_required(label, default=None):
     while True:
         if default is None:
             raw = input(f"{label}: ").strip()
@@ -21,15 +55,13 @@ def prompt_text(label, default=None, allow_empty=False):
         if raw == "":
             if default is not None:
                 return str(default)
-            if allow_empty:
-                return ""
             print("Value required.")
             continue
 
         return raw
 
 
-def prompt_float(label, default):
+def prompt_float_required(label, default):
     while True:
         raw = input(f"{label} [{default}]: ").strip()
         if raw == "":
@@ -40,92 +72,147 @@ def prompt_float(label, default):
             print("Enter a valid number (example: 0.5 or 1.0).")
 
 
-def prompt_yes_no(label, default=False):
-    default_text = "y" if default else "n"
-    while True:
-        raw = input(f"{label} (y/n) [{default_text}]: ").strip().lower()
-        if raw == "":
-            return default
-        if raw in ("y", "yes", "1", "true", "on"):
-            return True
-        if raw in ("n", "no", "0", "false", "off"):
-            return False
-        print("Type y or n.")
+def choose_model_path(default_model=None):
+    model_candidates = sorted(set(glob.glob("*.engine") + glob.glob("*.pt")))
+    print("")
+    print("Model selection")
+
+    if model_candidates:
+        print("Model files found in current folder:")
+        for i, f in enumerate(model_candidates, start=1):
+            print(f"  {i}. {f}")
+
+        default_idx = 0
+        if default_model and default_model in model_candidates:
+            default_idx = model_candidates.index(default_model)
+
+        choice = menu_select(
+            "Choose model file",
+            model_candidates,
+            default_index=default_idx,
+            allow_custom=True,
+            custom_label="Enter custom model path",
+        )
+        if choice is not None:
+            return choice
+
+    return prompt_text_required("Custom model path", default_model or "yolo26s.pt")
 
 
-def find_candidate_models():
-    patterns = ["*.pt", "*.engine"]
-    files = []
-    for p in patterns:
-        files.extend(glob.glob(p))
-    files = sorted(set(files))
-    return files
+def choose_source(default_source="usb0"):
+    source_options = [
+        "usb0",
+        "usb1",
+        "picamera0",
+        "Video file path",
+        "Image file path",
+        "Image folder path",
+        "Custom source string",
+    ]
+
+    if default_source in source_options:
+        default_idx = source_options.index(default_source)
+    else:
+        default_idx = 0
+
+    choice = menu_select("Source selection", source_options, default_index=default_idx)
+
+    if choice == "Video file path":
+        return prompt_text_required("Enter video file path")
+    if choice == "Image file path":
+        return prompt_text_required("Enter image file path")
+    if choice == "Image folder path":
+        return prompt_text_required("Enter image folder path")
+    if choice == "Custom source string":
+        return prompt_text_required("Enter custom source (example: usb0, picamera0, rtsp://..., file path)", default_source)
+
+    return choice
+
+
+def choose_resolution(default_resolution="640x480"):
+    options = [
+        "640x480",
+        "1280x720",
+        "1920x1080",
+        "none (use source resolution)",
+        "Custom WxH",
+    ]
+
+    default_idx = 0
+    if default_resolution is None:
+        default_idx = 3
+    elif str(default_resolution) in ["640x480", "1280x720", "1920x1080"]:
+        default_idx = ["640x480", "1280x720", "1920x1080"].index(str(default_resolution))
+
+    choice = menu_select("Resolution selection", options, default_index=default_idx)
+
+    if choice == "none (use source resolution)":
+        return None
+    if choice == "Custom WxH":
+        return prompt_text_required("Enter resolution WxH", default_resolution or "640x480")
+
+    return choice
+
+
+def choose_threshold(default_thresh=0.5):
+    options = ["0.25", "0.40", "0.50", "0.60", "0.75", "Custom threshold"]
+    default_map = {"0.25": 0, "0.40": 1, "0.50": 2, "0.60": 3, "0.75": 4}
+    default_key = f"{float(default_thresh):0.2f}" if default_thresh is not None else "0.50"
+    default_idx = default_map.get(default_key, 2)
+
+    choice = menu_select("Confidence threshold", options, default_index=default_idx)
+    if choice == "Custom threshold":
+        return prompt_float_required("Enter threshold", default_thresh if default_thresh is not None else 0.5)
+    return float(choice)
+
+
+def choose_presence_timeout(default_timeout=1.0):
+    options = ["0.5", "1.0", "2.0", "5.0", "10.0", "Custom timeout"]
+    default_map = {"0.5": 0, "1.0": 1, "2.0": 2, "5.0": 3, "10.0": 4}
+    default_key = f"{float(default_timeout):0.1f}" if default_timeout is not None else "1.0"
+    default_idx = default_map.get(default_key, 1)
+
+    choice = menu_select("Presence OFF timeout (seconds)", options, default_index=default_idx)
+    if choice == "Custom timeout":
+        return prompt_float_required("Enter timeout seconds", default_timeout if default_timeout is not None else 1.0)
+    return float(choice)
+
+
+def choose_text_setting(title, current_value):
+    choice = menu_select(
+        f"{title} (current: {current_value})",
+        ["Use current/default value", "Enter custom value"],
+        default_index=0,
+    )
+    if choice == "Use current/default value":
+        return current_value
+    return prompt_text_required(f"Enter {title.lower()}", current_value)
 
 
 def interactive_wizard(args):
     print("")
     print("YOLO Detect Setup Wizard")
-    print("Press Enter to accept defaults.")
+    print("Choose options by number to avoid typos.")
+    print("Press Enter to accept the default selection.")
     print("")
 
-    model_candidates = find_candidate_models()
-    if model_candidates:
-        print("Model files found in current folder:")
-        for i, f in enumerate(model_candidates, start=1):
-            print(f"  {i}. {f}")
-        print("")
-
-    default_model = args.model or (model_candidates[0] if model_candidates else "yolo26s.pt")
-    model_in = prompt_text("Model path", default_model)
-
-    if model_candidates and model_in.isdigit():
-        idx = int(model_in)
-        if 1 <= idx <= len(model_candidates):
-            model_path = model_candidates[idx - 1]
-        else:
-            print("Invalid model number. Using typed value.")
-            model_path = model_in
-    else:
-        model_path = model_in
-
-    source = prompt_text("Source (usb0, picamera0, video file, image file, or folder)", args.source or "usb0")
-    resolution = prompt_text("Resolution WxH (use 'none' for source resolution)", args.resolution or "640x480")
-    if resolution.strip().lower() in ("none", "no", "off", "source", ""):
-        resolution = None
-
-    thresh = prompt_float("Confidence threshold", args.thresh if args.thresh is not None else 0.5)
-    record = prompt_yes_no("Record output video", bool(args.record))
+    args.model = choose_model_path(default_model=args.model or "yolo26s.engine")
+    args.source = choose_source(default_source=args.source or "usb0")
+    args.resolution = choose_resolution(default_resolution=args.resolution if args.resolution is not None else "640x480")
+    args.thresh = choose_threshold(default_thresh=args.thresh if args.thresh is not None else 0.5)
+    args.record = menu_yes_no("Record output video", default=bool(args.record))
 
     print("")
-    print("MQTT / Home Assistant presence settings")
-    print("")
+    print("MQTT / Home Assistant settings")
 
-    ha_ip = prompt_text("MQTT broker IP", args.ha_ip or "192.168.1.52")
-    mqtt_user = prompt_text("MQTT username", args.mqtt_user or "jtrdev")
-    mqtt_pass = prompt_text("MQTT password", args.mqtt_pass or "1010Maxisthebest9911#")
-    presence_topic = prompt_text("Presence topic", args.presence_topic or "home/orin/yolo/person_present")
-    presence_class = prompt_text("Presence class", args.presence_class or "person")
-    presence_off_timeout = prompt_float(
-        "Presence OFF timeout seconds",
-        args.presence_off_timeout if args.presence_off_timeout is not None else 1.0
-    )
-    mqtt_retain = prompt_yes_no("Publish retained MQTT messages", bool(args.mqtt_retain))
-    presence_debug = prompt_yes_no("Enable presence debug prints", True if args.presence_debug else False)
-
-    # Write back into args namespace so existing code still works
-    args.model = model_path
-    args.source = source
-    args.resolution = resolution
-    args.thresh = float(thresh)
-    args.record = record
-    args.ha_ip = ha_ip
-    args.mqtt_user = mqtt_user
-    args.mqtt_pass = mqtt_pass
-    args.presence_topic = presence_topic
-    args.presence_class = presence_class
-    args.presence_off_timeout = float(presence_off_timeout)
-    args.mqtt_retain = mqtt_retain
-    args.presence_debug = presence_debug
+    args.ha_ip = choose_text_setting("MQTT broker IP", args.ha_ip or "192.168.1.52")
+    args.mqtt_user = choose_text_setting("MQTT username", args.mqtt_user or "jtrdev")
+    args.mqtt_pass = choose_text_setting("MQTT password", args.mqtt_pass or "1010Maxisthebest9911#")
+    args.presence_topic = choose_text_setting("Presence topic", args.presence_topic or "home/orin/yolo/person_present")
+    args.presence_class = choose_text_setting("Presence class", args.presence_class or "person")
+    args.presence_off_timeout = choose_presence_timeout(default_timeout=args.presence_off_timeout if args.presence_off_timeout is not None else 1.0)
+    args.mqtt_retain = menu_yes_no("Publish retained MQTT messages", default=bool(args.mqtt_retain))
+    args.presence_debug = menu_yes_no("Enable presence debug prints", default=True if args.presence_debug else False)
 
     print("")
     print("Starting with these settings:")
@@ -135,6 +222,7 @@ def interactive_wizard(args):
     print(f"  thresh={args.thresh}")
     print(f"  record={args.record}")
     print(f"  ha_ip={args.ha_ip}")
+    print(f"  mqtt_user={args.mqtt_user}")
     print(f"  presence_topic={args.presence_topic}")
     print(f"  presence_class={args.presence_class}")
     print(f"  presence_off_timeout={args.presence_off_timeout}")
@@ -173,7 +261,6 @@ def parse_args():
         help='Record results (video/camera only) to "demo1.avi" (requires --resolution)',
     )
 
-    # Guided mode
     parser.add_argument(
         "--wizard",
         action="store_true",

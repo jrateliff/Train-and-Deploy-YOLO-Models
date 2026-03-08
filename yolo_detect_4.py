@@ -1,21 +1,3 @@
-# YOLOv8 object detection with MQTT presence publishing example
-# This script demonstrates how to use a YOLOv8 model for object detection on various sources (images, videos, USB camera, or Raspberry Pi camera) and publish presence information to an MQTT broker (like Home Assistant) when a specified class is detected.
-# The script uses the ultralytics YOLO library for inference and OpenCV for video processing
-#
-#
-# RUN IN TERMINAL WITH:
-# python3 yolo_detect_4.py \
-#   --model yolo26s.pt \
-#   --source usb0 \
-#   --resolution 640x480 \
-#   --thresh 0.5 \
-#   --presence-class person \
-#   --presence-debug
-#
-# 
-#  mosquitto_sub -h 192.168.1.52 -p 1883 -u "jtrdev" -P "1010Maxisthebest9911#" -t "home/orin/yolo/person_present" -v
-
-
 #!/usr/bin/env python3
 import os
 import sys
